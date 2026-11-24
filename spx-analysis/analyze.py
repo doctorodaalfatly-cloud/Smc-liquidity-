@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""SPX multi-school technical analysis from the live TradingView chart.
+"""S&P 500 multi-school technical analysis from the live TradingView chart.
 
-Reads OHLCV for 5m / 15m / 1H / Daily through the tradingview-mcp CLI
-(Chrome DevTools Protocol on :9222), scores 10 technical-analysis schools on
-each intraday timeframe, derives CALL / PUT triggers, targets and stops, and
-writes report.json + report.html (Arabic, RTL) + chart screenshots to OUT_DIR.
+Analyses SPX during the US cash session and the SPX500 CFD (FOREX.com)
+outside it. Reads OHLCV for 5m / 15m / 1H / 4H / Daily through the
+tradingview-mcp CLI (Chrome DevTools Protocol on :9222), scores 10
+technical-analysis schools on each intraday timeframe, derives CALL / PUT
+triggers, targets and stops, and writes report.json + report.html (Arabic,
+RTL) + chart screenshots to OUT_DIR. report.json's "fresh" flag says whether
+the newest 5m bar is under 30 minutes old.
 
 Usage:  python3 analyze.py [OUT_DIR]
 """
@@ -35,8 +38,8 @@ def market_open(now=None):
 # SPX (cash index) only trades 09:30-16:00 New York. Outside that, use the
 # SPX500 CFD (FOREX.com), which trades ~23h/day and tracks the S&P 500.
 SYMBOL = os.environ.get("SYMBOL") or ("SP:SPX" if market_open() else "FOREXCOM:SPX500")
-IS_FUT = SYMBOL != "SP:SPX"  # 23h instrument: sessions start 17:00 NY
-NAME = "SPX500" if IS_FUT else "SPX"
+IS_CFD = SYMBOL != "SP:SPX"  # ~23h instrument whose sessions start 17:00 NY
+NAME = "SPX500" if IS_CFD else "SPX"
 
 
 # ---------------------------------------------------------------- data access
@@ -394,9 +397,8 @@ def main():
 
     b5 = data["5"]
     last_t = dt.datetime.fromtimestamp(b5[-1]["time"], NY)
-    today = last_t.date()
-    # session date: futures sessions start 18:00 NY on the previous day
-    shift = dt.timedelta(hours=7 if IS_FUT else 0)  # CFD sessions start 17:00 NY
+    # session date: a CFD session opening at 17:00 NY belongs to the next day
+    shift = dt.timedelta(hours=7 if IS_CFD else 0)
     day = lambda x: (dt.datetime.fromtimestamp(x["time"], NY) + shift).date()
     today = day(b5[-1])
     today_bars = [x for x in b5 if day(x) == today]
@@ -417,8 +419,8 @@ def main():
         "symbol": q.get("symbol", SYMBOL),
         "name": NAME,
         "market_open": market_open(),
-        # fresh = the newest 5m bar started within the last 30 minutes (TradingView
-        # guest data is ~10 min delayed); false on holidays / outside the session
+        # fresh = the newest 5m bar started within the last 30 minutes (SPX guest
+        # data is ~10 min delayed); false when the market is closed or on holidays
         "fresh": (dt.datetime.now(NY) - last_t).total_seconds() <= 1800,
         "data_age_min": round((dt.datetime.now(NY) - last_t).total_seconds() / 60),
         "as_of_ny": last_t.strftime("%Y-%m-%d %H:%M"),
