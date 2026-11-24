@@ -23,7 +23,20 @@ HOME = os.path.expanduser("~")
 TV_DIR = os.path.join(HOME, "tradingview-mcp")
 NODE = shutil.which("node") or "/opt/node22/bin/node"
 OUT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "spx-report")
-TFS = [("5", "5 دقائق", 5), ("15", "15 دقيقة", 4), ("60", "ساعة", 3)]
+TFS = [("5", "5 دقائق", 5), ("15", "15 دقيقة", 4), ("60", "ساعة", 3), ("240", "4 ساعات", 3)]
+
+
+def market_open(now=None):
+    """US cash session (09:30-16:00 New York, Mon-Fri); holidays not handled."""
+    n = now or dt.datetime.now(NY)
+    return n.weekday() < 5 and dt.time(9, 30) <= n.time() < dt.time(16, 0)
+
+
+# SPX (cash index) only moves during the US session; outside it, analyse the
+# E-mini S&P 500 futures, which trade ~23h/day and track SPX.
+SYMBOL = os.environ.get("SYMBOL") or ("SP:SPX" if market_open() else "CME_MINI:ES1!")
+IS_FUT = "ES1!" in SYMBOL
+NAME = "ES (عقود S&P 500 المستقبلية)" if IS_FUT else "SPX"
 
 
 # ---------------------------------------------------------------- data access
@@ -36,7 +49,7 @@ def tv(*args, timeout=90):
         raise RuntimeError(f"tv {' '.join(args)} failed: {r.stdout[-300:]} {r.stderr[-300:]}")
 
 
-SPACING = {"5": 300, "15": 900, "60": 3600, "D": 86400}
+SPACING = {"5": 300, "15": 900, "60": 3600, "240": 14400, "D": 86400}
 DISMISS_JS = """(()=>{let n=0;document.querySelectorAll('button').forEach(b=>{const t=(b.innerText||'').trim();
 if(/^Got it/.test(t)){b.click();n++}});document.querySelectorAll('[class*=dialog-]').forEach(d=>{
 if(/Join for free|Black Friday|Explore offers|Sign up/i.test(d.innerText||'')){d.remove();n++}});return n})()"""
@@ -53,9 +66,8 @@ def dismiss():
 def tf_ok(bars, tf):
     if len(bars) < 60:
         return False
-    gaps = sorted(b["time"] - a["time"] for a, b in zip(bars[-30:], bars[-29:]))
-    g = gaps[len(gaps) // 2]  # median spacing
-    return g >= 86400 if tf == "D" else g == SPACING[tf]
+    g = min(b["time"] - a["time"] for a, b in zip(bars[-30:], bars[-29:]))
+    return g >= 72000 if tf == "D" else g == SPACING[tf]
 
 
 def fetch(tf, shot=None):
@@ -64,7 +76,7 @@ def fetch(tf, shot=None):
     bars = []
     for attempt in range(4):
         if attempt >= 2:
-            tv("ui", "eval", f"location.href='https://www.tradingview.com/chart/?symbol=SP%3ASPX&interval={tf}'")
+            tv("ui", "eval", f"location.href='https://www.tradingview.com/chart/?symbol={SYMBOL.replace(':', '%3A')}&interval={tf}'")
             time.sleep(15)
         dismiss()
         tv("timeframe", tf)
@@ -284,7 +296,7 @@ def analyze_tf(b, k, common, today_bars):
     vol_ratio = b[-2]["volume"] / (sma([x["volume"] for x in b[:-2]], 20) or 1)
     s = (1 if vw and px > vw else -1 if vw else 0)
     add("الحجم و VWAP و Volume Profile", s,
-        f"VWAP اليوم {vw:.1f} (السعر {'فوقه' if px > vw else 'تحته'})، POC {pc:.1f}، حجم آخر شمعة مغلقة ×{vol_ratio:.1f} من المتوسط")
+        f"VWAP الجلسة {vw:.1f} (السعر {'فوقه' if px > vw else 'تحته'})، POC {pc:.1f}، حجم آخر شمعة مغلقة ×{vol_ratio:.1f} من المتوسط")
     levels += [vw, pc]
 
     # 7 Fibonacci on the latest major leg (last 120 bars)
@@ -365,6 +377,8 @@ def plan(px, a, levels):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
+    tv("symbol", SYMBOL)
+    time.sleep(4)
     data = {tf: fetch(tf, f"spx_{tf}") for tf, _, _ in TFS}
     daily = fetch("D")
     tv("timeframe", "15")
@@ -373,7 +387,10 @@ def main():
     b5 = data["5"]
     last_t = dt.datetime.fromtimestamp(b5[-1]["time"], NY)
     today = last_t.date()
-    day = lambda x: dt.datetime.fromtimestamp(x["time"], NY).date()
+    # session date: futures sessions start 18:00 NY on the previous day
+    shift = dt.timedelta(hours=6 if IS_FUT else 0)
+    day = lambda x: (dt.datetime.fromtimestamp(x["time"], NY) + shift).date()
+    today = day(b5[-1])
     today_bars = [x for x in b5 if day(x) == today]
     prev = [x for x in daily if day(x) < today][-1]
     H, L, C = prev["high"], prev["low"], prev["close"]
@@ -389,7 +406,9 @@ def main():
     d_trend = "صاعد" if dc[-1] > d_e50 > d_e200 else "هابط" if dc[-1] < d_e50 and dc[-1] < d_e20 else "متذبذب"
 
     report = {
-        "symbol": q.get("symbol", "SP:SPX"),
+        "symbol": q.get("symbol", SYMBOL),
+        "name": NAME,
+        "market_open": market_open(),
         "as_of_ny": last_t.strftime("%Y-%m-%d %H:%M"),
         "generated_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"),
         "last": q.get("last", b5[-1]["close"]),
@@ -422,9 +441,10 @@ def render(r):
     sym = lambda s: "▲" if s > 0 else "▼" if s < 0 else "■"
     d = r["day"]
     out = [f"""<div dir="rtl" style="font-family:Tahoma,Arial,sans-serif;color:#111;max-width:760px;margin:auto">
-<h2 style="margin:0 0 4px">تحليل SPX الساعي — {e(r['as_of_ny'])} (نيويورك)</h2>
+<h2 style="margin:0 0 4px">تحليل {e(r['name'])} الساعي — {e(r['as_of_ny'])} (نيويورك)</h2>
+{'' if r['market_open'] else '<p style="margin:0 0 8px;padding:6px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:13px">السوق النقدي لـ SPX مغلق الآن، لذلك التحليل على عقود ES المستقبلية التي تتداول قرابة 23 ساعة وتتبع SPX. فرق السعر بينهما (الأساس) عادةً بضع نقاط إلى عشرات النقاط، فطبّق المستويات بالنسبة نفسها.</p>'}
 <p style="margin:0 0 12px;color:#555">آخر سعر <b>{r['last']:.2f}</b> ({d['change_pct']:+.2f}%) · افتتاح {d['open']:.1f} · أعلى {d['high']:.1f} · أدنى {d['low']:.1f} · VWAP {d['vwap']:.1f}<br>
-إغلاق أمس {d['prev_close']:.1f} (أعلى {d['prev_high']:.1f} / أدنى {d['prev_low']:.1f}) · الاتجاه اليومي: <b>{e(r['daily_context']['trend'])}</b> (EMA20 {r['daily_context']['ema20']} / EMA50 {r['daily_context']['ema50']} / EMA200 {r['daily_context']['ema200']}، RSI {r['daily_context']['rsi']})</p>
+إغلاق الجلسة السابقة {d['prev_close']:.1f} (أعلى {d['prev_high']:.1f} / أدنى {d['prev_low']:.1f}) · الاتجاه اليومي: <b>{e(r['daily_context']['trend'])}</b> (EMA20 {r['daily_context']['ema20']} / EMA50 {r['daily_context']['ema50']} / EMA200 {r['daily_context']['ema200']}، RSI {r['daily_context']['rsi']})</p>
 <!--SUMMARY-->"""]
     for tf, t in r["timeframes"].items():
         p = t["plan"]
