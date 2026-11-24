@@ -407,6 +407,10 @@ def main():
         "symbol": q.get("symbol", SYMBOL),
         "name": NAME,
         "market_open": market_open(),
+        # fresh = the newest 5m bar started within the last 30 minutes (TradingView
+        # guest data is ~10 min delayed); false on holidays / outside the session
+        "fresh": (dt.datetime.now(NY) - last_t).total_seconds() <= 1800,
+        "data_age_min": round((dt.datetime.now(NY) - last_t).total_seconds() / 60),
         "as_of_ny": last_t.strftime("%Y-%m-%d %H:%M"),
         "generated_utc": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M"),
         "last": q.get("last", b5[-1]["close"]),
@@ -428,6 +432,7 @@ def main():
     with open(os.path.join(OUT, "report.html"), "w") as f:
         f.write(render(report))
     print(json.dumps({"out": OUT, "last": report["last"], "as_of_ny": report["as_of_ny"],
+                      "fresh": report["fresh"], "data_age_min": report["data_age_min"],
                       "bias": {tf: (r["bias"], r["score"]) for tf, r in report["timeframes"].items()}},
                      ensure_ascii=False))
 
