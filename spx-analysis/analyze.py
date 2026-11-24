@@ -32,9 +32,11 @@ def market_open(now=None):
     return n.weekday() < 5 and dt.time(9, 30) <= n.time() < dt.time(16, 0)
 
 
-SYMBOL = os.environ.get("SYMBOL") or "SP:SPX"
-IS_FUT = "ES1!" in SYMBOL
-NAME = "ES (عقود S&P 500 المستقبلية)" if IS_FUT else "SPX"
+# SPX (cash index) only trades 09:30-16:00 New York. Outside that, use the
+# SPX500 CFD (FOREX.com), which trades ~23h/day and tracks the S&P 500.
+SYMBOL = os.environ.get("SYMBOL") or ("SP:SPX" if market_open() else "FOREXCOM:SPX500")
+IS_FUT = SYMBOL != "SP:SPX"  # 23h instrument: sessions start 17:00 NY
+NAME = "SPX500" if IS_FUT else "SPX"
 
 
 # ---------------------------------------------------------------- data access
@@ -178,8 +180,8 @@ def swings(b, k):
 
 def vwap(bars):
     v = sum(x["volume"] for x in bars)
-    if not v:
-        return None
+    if not v:  # CFDs carry no volume: fall back to the mean typical price
+        return sum((x["high"] + x["low"] + x["close"]) / 3 for x in bars) / len(bars)
     return sum((x["high"] + x["low"] + x["close"]) / 3 * x["volume"] for x in bars) / v
 
 
@@ -188,7 +190,7 @@ def poc(bars, step):
     for x in bars:
         lo, hi = int(x["low"] // step), int(x["high"] // step)
         for k in range(lo, hi + 1):
-            hist[k] = hist.get(k, 0) + x["volume"] / (hi - lo + 1)
+            hist[k] = hist.get(k, 0) + (x["volume"] or 1) / (hi - lo + 1)  # TPO count when no volume
     return (max(hist, key=hist.get) + 0.5) * step if hist else None
 
 
@@ -294,7 +296,7 @@ def analyze_tf(b, k, common, today_bars):
     vol_ratio = b[-2]["volume"] / (sma([x["volume"] for x in b[:-2]], 20) or 1)
     s = (1 if vw and px > vw else -1 if vw else 0)
     add("الحجم و VWAP و Volume Profile", s,
-        f"VWAP الجلسة {vw:.1f} (السعر {'فوقه' if px > vw else 'تحته'})، POC {pc:.1f}، حجم آخر شمعة مغلقة ×{vol_ratio:.1f} من المتوسط")
+        f"VWAP الجلسة {vw:.1f} (السعر {'فوقه' if px > vw else 'تحته'})، POC {pc:.1f}، " + (f"حجم آخر شمعة مغلقة ×{vol_ratio:.1f} من المتوسط" if b[-2]["volume"] else "لا يوجد حجم تداول لهذا الرمز (CFD)، فالـ VWAP والـ POC محسوبان بالسعر والوقت"))
     levels += [vw, pc]
 
     # 7 Fibonacci on the latest major leg (last 120 bars)
@@ -375,8 +377,16 @@ def plan(px, a, levels):
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    tv("symbol", SYMBOL)
-    time.sleep(4)
+    # load the symbol with a fresh page: an in-place switch can be ignored
+    # while a TradingView sign-up modal is open
+    tv("ui", "eval", f"location.href='https://www.tradingview.com/chart/?symbol={SYMBOL.replace(':', '%3A')}&interval=5'")
+    time.sleep(15)
+    for _ in range(10):
+        if SYMBOL in json.dumps(tv("state")):
+            break
+        time.sleep(3)
+    else:
+        raise RuntimeError(f"chart did not load {SYMBOL}")
     data = {tf: fetch(tf, f"spx_{tf}") for tf, _, _ in TFS}
     daily = fetch("D")
     tv("timeframe", "15")
@@ -386,7 +396,7 @@ def main():
     last_t = dt.datetime.fromtimestamp(b5[-1]["time"], NY)
     today = last_t.date()
     # session date: futures sessions start 18:00 NY on the previous day
-    shift = dt.timedelta(hours=6 if IS_FUT else 0)
+    shift = dt.timedelta(hours=7 if IS_FUT else 0)  # CFD sessions start 17:00 NY
     day = lambda x: (dt.datetime.fromtimestamp(x["time"], NY) + shift).date()
     today = day(b5[-1])
     today_bars = [x for x in b5 if day(x) == today]
@@ -445,7 +455,7 @@ def render(r):
     d = r["day"]
     out = [f"""<div dir="rtl" style="font-family:Tahoma,Arial,sans-serif;color:#111;max-width:760px;margin:auto">
 <h2 style="margin:0 0 4px">تحليل {e(r['name'])} الساعي — {e(r['as_of_ny'])} (نيويورك)</h2>
-{'' if r['market_open'] else '<p style="margin:0 0 8px;padding:6px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:13px">السوق الأمريكي مغلق الآن (جلسة SPX من 5:30 مساءً حتى 12:00 منتصف الليل بتوقيت الرياض)، فالأرقام من آخر جلسة ولن تتغير قبل الافتتاح. استخدم المستويات كخطة للجلسة القادمة.</p>'}
+{'' if r['market_open'] else '<p style="margin:0 0 8px;padding:6px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:13px">جلسة SPX النقدي مغلقة الآن (تعمل من 5:30 مساءً حتى 12:00 منتصف الليل بتوقيت الرياض)، لذلك هذا التحليل على <b>SPX500</b> (FOREX.com CFD) الذي يتداول قرابة 23 ساعة ويتبع S&amp;P 500. قد يختلف سعره عن SPX ببضع نقاط.</p>'}
 <p style="margin:0 0 12px;color:#555">آخر سعر <b>{r['last']:.2f}</b> ({d['change_pct']:+.2f}%) · افتتاح {d['open']:.1f} · أعلى {d['high']:.1f} · أدنى {d['low']:.1f} · VWAP {d['vwap']:.1f}<br>
 إغلاق الجلسة السابقة {d['prev_close']:.1f} (أعلى {d['prev_high']:.1f} / أدنى {d['prev_low']:.1f}) · الاتجاه اليومي: <b>{e(r['daily_context']['trend'])}</b> (EMA20 {r['daily_context']['ema20']} / EMA50 {r['daily_context']['ema50']} / EMA200 {r['daily_context']['ema200']}، RSI {r['daily_context']['rsi']})</p>
 <!--SUMMARY-->"""]
