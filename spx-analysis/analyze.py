@@ -32,9 +32,7 @@ def market_open(now=None):
     return n.weekday() < 5 and dt.time(9, 30) <= n.time() < dt.time(16, 0)
 
 
-# SPX (cash index) only moves during the US session; outside it, analyse the
-# E-mini S&P 500 futures, which trade ~23h/day and track SPX.
-SYMBOL = os.environ.get("SYMBOL") or ("SP:SPX" if market_open() else "CME_MINI:ES1!")
+SYMBOL = os.environ.get("SYMBOL") or "SP:SPX"
 IS_FUT = "ES1!" in SYMBOL
 NAME = "ES (عقود S&P 500 المستقبلية)" if IS_FUT else "SPX"
 
@@ -442,7 +440,7 @@ def render(r):
     d = r["day"]
     out = [f"""<div dir="rtl" style="font-family:Tahoma,Arial,sans-serif;color:#111;max-width:760px;margin:auto">
 <h2 style="margin:0 0 4px">تحليل {e(r['name'])} الساعي — {e(r['as_of_ny'])} (نيويورك)</h2>
-{'' if r['market_open'] else '<p style="margin:0 0 8px;padding:6px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:13px">السوق النقدي لـ SPX مغلق الآن، لذلك التحليل على عقود ES المستقبلية التي تتداول قرابة 23 ساعة وتتبع SPX. فرق السعر بينهما (الأساس) عادةً بضع نقاط إلى عشرات النقاط، فطبّق المستويات بالنسبة نفسها.</p>'}
+{'' if r['market_open'] else '<p style="margin:0 0 8px;padding:6px 10px;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:13px">السوق الأمريكي مغلق الآن (جلسة SPX من 5:30 مساءً حتى 12:00 منتصف الليل بتوقيت الرياض)، فالأرقام من آخر جلسة ولن تتغير قبل الافتتاح. استخدم المستويات كخطة للجلسة القادمة.</p>'}
 <p style="margin:0 0 12px;color:#555">آخر سعر <b>{r['last']:.2f}</b> ({d['change_pct']:+.2f}%) · افتتاح {d['open']:.1f} · أعلى {d['high']:.1f} · أدنى {d['low']:.1f} · VWAP {d['vwap']:.1f}<br>
 إغلاق الجلسة السابقة {d['prev_close']:.1f} (أعلى {d['prev_high']:.1f} / أدنى {d['prev_low']:.1f}) · الاتجاه اليومي: <b>{e(r['daily_context']['trend'])}</b> (EMA20 {r['daily_context']['ema20']} / EMA50 {r['daily_context']['ema50']} / EMA200 {r['daily_context']['ema200']}، RSI {r['daily_context']['rsi']})</p>
 <!--SUMMARY-->"""]
