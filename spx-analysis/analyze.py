@@ -385,7 +385,8 @@ def main():
     tv("ui", "eval", f"location.href='https://www.tradingview.com/chart/?symbol={SYMBOL.replace(':', '%3A')}&interval=5'")
     time.sleep(15)
     for _ in range(10):
-        if SYMBOL in json.dumps(tv("state")):
+        # guests get prefixed feeds (e.g. SP_NAUTH:SPX), so compare the ticker part
+        if str(tv("state").get("symbol", "")).split(":")[-1] == SYMBOL.split(":")[-1]:
             break
         time.sleep(3)
     else:
